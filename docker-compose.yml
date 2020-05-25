@@ -1,0 +1,30 @@
+version: '2.3'
+
+volumes:
+  rootfs: {}
+
+services:
+  9front:
+    image: plan9d/9front:latest
+    build:
+      context: 9front
+    environment:
+      - AUTH_SECRET=${AUTH_SECRET}
+      - P9FRONT_URL=http://bell-labs.co/9front/iso/9front-7408.1d345066125a.386.iso.gz.torrent
+    domainname: local
+    hostname: u9fs
+    ports:
+      - "564:564"
+    volumes:
+      - rootfs:/rootfs
+
+  authsrv9:
+    image: plan9d/authsrv9:latest
+    build:
+      context: authsrv9
+    environment:
+      - AUTH_SECRET=${AUTH_SECRET}
+    domainname: local
+    hostname: authsrv9
+    ports:
+      - "567:567"

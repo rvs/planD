@@ -1,0 +1,10 @@
+--- authsrv9/authsrv9.c
++++ authsrv9/authsrv9.c
+@@ -361,6 +361,7 @@
+ 	say("authid, keyok %d, status %d, expire %u, now %u\n", au.keyok, au.status, au.expire, now);
+ 	genkey(ks);
+ 	sok = eq(tr->authid, authid) && eq(tr->authdom, authdom) && au.keyok && au.status && (au.expire == 0 || now > au.expire);
++        say("======= %s/%s %s/%s %d %d %d\n", tr->authid, authid, tr->authdom, authdom, au.keyok, au.status, au.expire);
+ 
+ 	getuserinfo(tr->hostid, &u);
+ 	say("hostid '%s', user '%s', keyok %d, status %d, expire %u, now %u\n", tr->hostid, tr->uid, u.keyok, u.status, u.expire, now);

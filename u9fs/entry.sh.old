@@ -1,0 +1,25 @@
+#!/bin/sh
+
+bail() {
+   echo "$@"
+   exit 1
+}
+
+case $1 in
+serve) if [ -d "$2" ]; then
+          ROOT="$2"
+       elif [ "$2" = "-" ]; then
+          ROOT=/rootfs
+          mkdir -p /rootfs
+	  tar -C /rootfs -xf -
+       else
+	  ROOT=/
+       fi
+       socat -d -d TCP-LISTEN:564,reuseport,fork EXEC:"u9fs -D -a p9any $ROOT" &
+       ;;
+    *) bail "Usage: $0 [serve|help]"
+       ;;
+esac
+
+touch /tmp/u9fs.log
+tail -f /tmp/u9fs.log

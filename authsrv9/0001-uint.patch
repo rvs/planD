@@ -1,0 +1,14 @@
+--- authsrv9/util.h
++++ authsrv9/util.h
+@@ -2,11 +2,9 @@
+ #define nelem(p)	(sizeof (p)/sizeof (p)[0])
+ 
+ typedef unsigned char uchar;
+-/*
+ typedef unsigned short ushort;
+ typedef unsigned int uint;
+ typedef unsigned long ulong;
+-*/
+ typedef unsigned long long uvlong;
+ typedef long long vlong;
+ 

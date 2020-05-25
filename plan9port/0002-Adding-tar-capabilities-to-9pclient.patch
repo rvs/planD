@@ -1,0 +1,511 @@
+From a7bbee3e84a7b2a628981b9bc7db014c0709b564 Mon Sep 17 00:00:00 2001
+From: Roman Shaposhnik <rvs@apache.org>
+Date: Sat, 23 May 2020 01:25:02 +0000
+Subject: [PATCH] Adding tar capabilities to 9pclient
+
+Signed-off-by: Roman Shaposhnik <rvs@apache.org>
+---
+ src/cmd/9p.c | 459 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 459 insertions(+)
+
+diff --git a/src/cmd/9p.c b/src/cmd/9p.c
+index 75511a1..49623f2 100644
+--- a/src/cmd/9p.c
++++ b/src/cmd/9p.c
+@@ -6,9 +6,90 @@
+ #include <9pclient.h>
+ #include <auth.h>
+ #include <thread.h>
++#include <libString.h>
++
++#define islink(lf)	(isreallink(lf) || issymlink(lf))
++#define isreallink(lf)	((lf) == LF_LINK)
++#define issymlink(lf)	((lf) == LF_SYMLINK1 || (lf) == LF_SYMLINK2)
++#define OTHER(rdwr) (rdwr == Rd? Wr: Rd)
++
++#define ROUNDUP(a, b)	(((a) + (b) - 1)/(b))
++#define BYTES2TBLKS(bytes) ROUNDUP(bytes, Tblock)
++
++/* read big-endian binary integers; args must be (uchar *) */
++#define	G2BEBYTE(x)	(((x)[0]<<8)  |  (x)[1])
++#define	G3BEBYTE(x)	(((x)[0]<<16) | ((x)[1]<<8)  |  (x)[2])
++#define	G4BEBYTE(x)	(((x)[0]<<24) | ((x)[1]<<16) | ((x)[2]<<8) | (x)[3])
++#define	G8BEBYTE(x)	(((vlong)G4BEBYTE(x)<<32) | (u32int)G4BEBYTE((x)+4))
++
++typedef vlong Off;
++typedef char *(*Refill)(int ar, char *bufs, int justhdr);
++
++enum { Stdin, Stdout, Stderr };
++enum { Rd, Wr };			/* pipe fd-array indices */
++enum { Output, Input };
++enum { Alldata, Justnxthdr };
++enum {
++	Tblock = 512,
++	Namsiz = 100,
++	Maxpfx = 155,		/* from POSIX */
++	Maxname = Namsiz + 1 + Maxpfx,
++	Binsize = 0x80,		/* flag in size[0], from gnu: positive binary size */
++	Binnegsz = 0xff,	/* flag in size[0]: negative binary size */
++
++	Nblock = 40,		/* maximum blocksize */
++	Dblock = 20,		/* default blocksize */
++	DEBUG = 0
++};
++
++/* POSIX link flags */
++enum {
++	LF_PLAIN1 =	'\0',
++	LF_PLAIN2 =	'0',
++	LF_LINK =	'1',
++	LF_SYMLINK1 =	'2',
++	LF_SYMLINK2 =	's',		/* 4BSD used this */
++	LF_CHR =	'3',
++	LF_BLK =	'4',
++	LF_DIR =	'5',
++	LF_FIFO =	'6',
++	LF_CONTIG =	'7'
++	/* 'A' - 'Z' are reserved for custom implementations */
++};
++
++typedef struct Hdr {
++	char	name[Namsiz];
++	char	mode[8];
++	char	uid[8];
++	char	gid[8];
++	char	size[12];
++	char	mtime[12];
++	char	chksum[8];
++	char	linkflag;
++	char	linkname[Namsiz];
++
++	/* rest are defined by POSIX's ustar format; see p1003.2b */
++	char	magic[6];	/* "ustar" */
++	char	version[2];
++	char	uname[32];
++	char	gname[32];
++	char	devmajor[8];
++	char	devminor[8];
++	char	prefix[Maxpfx]; /* if non-null, path= prefix "/" name */
++
++	char pad[12];
++} Hdr;
+ 
+ char *addr;
+ 
++static int aruid = 0;
++static int argid = 0;
++static int posix = 1;
++
++static int nblock = Dblock;
++static Hdr *tpblk, *endblk;
++static Hdr *curblk;
++
+ void
+ usage(void)
+ {
+@@ -21,6 +102,7 @@ usage(void)
+ 	fprint(2, "	stat name\n");
+ 	fprint(2, "	rdwr name\n");
+ 	fprint(2, "	ls [-ldn] name\n");
++	fprint(2, "	tar name\n");
+ 	fprint(2, "without -a, name elem/path means /path on server unix!$ns/elem\n");
+ 	threadexitsall("usage");
+ }
+@@ -39,6 +121,7 @@ void xrdwr(int, char**);
+ void xrm(int, char**);
+ void xcreate(int, char**);
+ void xcon(int, char**);
++void xtar(int, char**);
+ 
+ struct {
+ 	char *s;
+@@ -52,6 +135,7 @@ struct {
+ 	"stat", xstat,
+ 	"rdwr", xrdwr,
+ 	"ls", xls,
++	"tar", xtar,
+ 	"rm", xrm,
+ 	"create", xcreate,
+ };
+@@ -600,3 +684,378 @@ xls(int argc, char **argv)
+ 	}
+ 	threadexitsall(err);
+ }
++
++static void
++initblks(void)
++{
++        free(tpblk);
++        tpblk = malloc(Tblock * nblock);
++        assert(tpblk != nil);
++        endblk = tpblk + nblock;
++}
++
++static Hdr *
++getblk(int ar, Refill rfp, int justhdr)
++{
++	if (curblk == nil || curblk >= endblk) {  /* input block exhausted? */
++		if (rfp != nil && (*rfp)(ar, (char *)tpblk, justhdr) == nil)
++			return nil;
++		curblk = tpblk;
++	}
++	return curblk++;
++}
++
++static Hdr *
++getblke(int ar)
++{
++	return getblk(ar, nil, Alldata);
++}
++
++static Hdr *
++getblkz(int ar)
++{
++	Hdr *hp = getblke(ar);
++
++	if (hp != nil)
++		memset(hp, 0, Tblock);
++	return hp;
++}
++
++/*
++ * indicate that one is done with the last block obtained from getblke
++ * and it is now available to be written into the archive.
++ */
++static void
++putlastblk(int ar)
++{
++	unsigned bytes = Tblock * nblock;
++
++	/* if writing end-of-archive, aid compression (good hygiene too) */
++	if (curblk < endblk)
++		memset(curblk, 0, (char *)endblk - (char *)curblk);
++	if (write(ar, tpblk, bytes) != bytes)
++		sysfatal("error writing archive: %r");
++}
++
++static void
++putblk(int ar)
++{
++	if (curblk >= endblk)
++		putlastblk(ar);
++}
++
++static void
++putbackblk(int ar)
++{
++	curblk--;
++	USED(ar);
++}
++
++static void
++putblkmany(int ar, int blks)
++{
++	curblk += blks - 1;
++	putblk(ar);
++}
++
++/*
++ * how many block buffers are available, starting at the address
++ * just returned by getblk*?
++ */
++static int
++gothowmany(int max)
++{
++	int n = endblk - (curblk - 1);
++
++	return n > max? max: n;
++}
++
++static void
++putbe(uchar *dest, uvlong vl, int size)
++{
++        for (dest += size; size-- > 0; vl >>= 8)
++                *--dest = vl;
++}
++
++/*
++ * s is at most n bytes long, but need not be NUL-terminated.
++ * if shorter than n bytes, all bytes after the first NUL must also
++ * be NUL.
++ */
++static int
++tar_sstrnlen(char *s, int n)
++{
++        return s[n - 1] != '\0'? n: strlen(s);
++}
++
++/*
++ * modifies hp->chksum but restores it; important for the last block of the
++ * old archive when updating with `tar rf archive'
++ */
++static long
++chksum(Hdr *hp)
++{
++        int n = Tblock;
++        long i = 0;
++        uchar *cp = (uchar*)hp;
++        char oldsum[sizeof hp->chksum];
++
++        memmove(oldsum, hp->chksum, sizeof oldsum);
++        memset(hp->chksum, ' ', sizeof hp->chksum);
++        while (n-- > 0)
++                i += *cp++;
++        memmove(hp->chksum, oldsum, sizeof oldsum);
++        return i;
++}
++
++static int
++isustar(Hdr *hp)
++{
++        return strcmp(hp->magic, "ustar") == 0;
++}
++
++/* set fullname from header */
++static char *
++name(Hdr *hp)
++{
++        int pfxlen, namlen;
++        static char fullnamebuf[2 + Maxname + 1];       /* 2 at beginning for ./ on relative names */
++        char *fullname;
++
++        fullname = fullnamebuf+2;
++        namlen = tar_sstrnlen(hp->name, sizeof hp->name);
++        if (hp->prefix[0] == '\0' || !isustar(hp)) {    /* old-style name? */
++                memmove(fullname, hp->name, namlen);
++                fullname[namlen] = '\0';
++                return fullname;
++        }
++
++        /* name is in two pieces */
++        pfxlen = tar_sstrnlen(hp->prefix, sizeof hp->prefix);
++        memmove(fullname, hp->prefix, pfxlen);
++        fullname[pfxlen] = '/';
++        memmove(fullname + pfxlen + 1, hp->name, namlen);
++        fullname[pfxlen + 1 + namlen] = '\0';
++        return fullname;
++}
++
++static int
++isdir(Hdr *hp)
++{
++        /* the mode test is ugly but sometimes necessary */
++        return hp->linkflag == LF_DIR ||
++                strrchr(name(hp), '\0')[-1] == '/' ||
++                (strtoul(hp->mode, nil, 8)&0170000) == 040000;
++}
++
++/*
++ * if name is longer than Namsiz bytes, try to split it at a slash and fit the
++ * pieces into hp->prefix and hp->name.
++ */
++static int
++putfullname(Hdr *hp, char *name)
++{
++	int namlen, pfxlen;
++	char *sl, *osl;
++	String *slname = nil;
++
++	if (isdir(hp)) {
++		slname = s_new();
++		s_append(slname, name);
++		s_append(slname, "/");		/* posix requires this */
++		name = s_to_c(slname);
++	}
++
++	namlen = strlen(name);
++	if (namlen <= Namsiz) {
++		strncpy(hp->name, name, Namsiz);
++		hp->prefix[0] = '\0';		/* ustar paranoia */
++		return 0;
++	}
++
++	if (!posix || namlen > Maxname) {
++		fprint(2, "%s: name too long for tar header: %s\n",
++			argv0, name);
++		return -1;
++	}
++	/*
++	 * try various splits until one results in pieces that fit into the
++	 * appropriate fields of the header.  look for slashes from right
++	 * to left, in the hopes of putting the largest part of the name into
++	 * hp->prefix, which is larger than hp->name.
++	 */
++	sl = strrchr(name, '/');
++	while (sl != nil) {
++		pfxlen = sl - name;
++		if (pfxlen <= sizeof hp->prefix && namlen-1 - pfxlen <= Namsiz)
++			break;
++		osl = sl;
++		*osl = '\0';
++		sl = strrchr(name, '/');
++		*osl = '/';
++	}
++	if (sl == nil) {
++		fprint(2, "%s: name can't be split to fit tar header: %s\n",
++			argv0, name);
++		return -1;
++	}
++	*sl = '\0';
++	strncpy(hp->prefix, name, sizeof hp->prefix);
++	*sl++ = '/';
++	strncpy(hp->name, sl, sizeof hp->name);
++	if (slname)
++		s_free(slname);
++	return 0;
++}
++
++static int
++mkhdr(Hdr *hp, Dir *dir, char *file)
++{
++	/*
++	 * these fields run together, so we format them in order and don't use
++	 * snprint.
++	 */
++	sprint(hp->mode, "%6lo ", dir->mode & 0777);
++	sprint(hp->uid, "%6o ", aruid);
++	sprint(hp->gid, "%6o ", argid);
++	if (dir->length >= (Off)1<<32) {
++		static int printed;
++
++		if (!printed) {
++			printed = 1;
++			fprint(2, "%s: storing large sizes in \"base 256\"\n", argv0);
++		}
++		hp->size[0] = (char)Binsize;
++		/* emit so-called `base 256' representation of size */
++		putbe((uchar *)hp->size+1, dir->length, sizeof hp->size - 2);
++		hp->size[sizeof hp->size - 1] = ' ';
++	} else
++		sprint(hp->size, "%11lluo ", dir->length);
++	sprint(hp->mtime, "%11luo ", dir->mtime);
++	hp->linkflag = (dir->mode&DMDIR? LF_DIR: LF_PLAIN1);
++	putfullname(hp, file);
++	if (posix) {
++		strncpy(hp->magic, "ustar", sizeof hp->magic);
++		strncpy(hp->version, "00", sizeof hp->version);
++		strncpy(hp->uname, dir->uid, sizeof hp->uname);
++		strncpy(hp->gname, dir->gid, sizeof hp->gname);
++	}
++	sprint(hp->chksum, "%6luo", chksum(hp));
++	return 0;
++}
++
++static void addtoar(int ar, char *file, char *shortf, CFid *cwd);
++
++static void
++addtoar(int ar, char *file, char *shortf, CFid *cwd)
++{
++	int n, isdir;
++	long bytes;
++	ulong blksleft, blksread;
++	CFid *fd;
++	Hdr *hbp;
++	Dir *dir, *dirents;
++	String *name = nil;
++	
++	if ((fd = fswalk(cwd, shortf)) == nil){
++		fprint(2, "can't walk to %s: %r\n", shortf);
++		return;
++	}
++
++	if (fsfopen(fd, OREAD) < 0){
++		fsclose(fd);
++		fprint(2, "can't open %s: %r\n", shortf);
++		return;
++	}
++
++	if((dir = fsdirfstat(fd)) == nil){
++		fsclose(fd);
++		fprint(2, "dirstat %s: %r\n", shortf);
++		return;
++	}
++
++	hbp = getblkz(ar);
++	isdir = !!(dir->mode&DMDIR);
++	if (mkhdr(hbp, dir, file) < 0) {
++		putbackblk(ar);
++		free(dir);
++		fsclose(fd);
++		return;
++	}
++	putblk(ar);
++
++	blksleft = BYTES2TBLKS(dir->length);
++	free(dir);
++
++	if (isdir) {
++		n = fsdirreadall(fd, &dirents);
++		fsclose(fd);
++	        if (n == 0)
++		    return;
++
++	        if ((cwd = fswalk(cwd, shortf)) == nil)
++		    sysfatal("failed to walk down to %s: %r", shortf);	
++
++	        name = s_new();
++	        for (dir = dirents; dir < dirents + n; dir++) {
++		     s_reset(name);
++		     s_append(name, file);
++		     s_append(name, "/");
++		     s_append(name, dir->name);
++		     addtoar(ar, s_to_c(name), dir->name, cwd);
++	        }
++		fsclose(cwd);
++	        s_free(name);
++	        free(dirents);
++	} else {
++		for (; blksleft > 0; blksleft -= blksread) {
++			hbp = getblke(ar);
++			blksread = gothowmany(blksleft);
++			bytes = blksread * Tblock;
++			n = fsreadn(fd, hbp, bytes);
++			if (n < 0)
++				sysfatal("error reading %s: %r", file);
++			/*
++			 * ignore EOF.  zero any partial block to aid
++			 * compression and emergency recovery of data.
++			 */
++			if (n < Tblock)
++				memset((uchar*)hbp + n, 0, bytes - n);
++			putblkmany(ar, blksread);
++		}
++		fsclose(fd);
++		if (DEBUG)
++			fprint(2, "%s\n", file);
++	}
++}
++
++void
++xtar(int argc, char **argv)
++{
++	char *err, *name;
++	int i, ar;
++	CFsys *fs;
++
++	if(argc == 0){
++		argv = dot;
++		argc = 1;
++	}
++
++	initblks();
++	ar = Stdout;
++	for (i = 1; i < argc; i++) {
++		name = argv[i];
++                fs = xparse(name, &name);
++		addtoar(ar, name, name, fsroot(fs));
++		fsunmount(fs);
++	}
++
++	/* write end-of-archive marker */
++	getblkz(ar);
++	putblk(ar);
++	getblkz(ar);
++	putlastblk(ar);
++
++	err = ""; /* err = "errors"; */
++	threadexitsall(err);
++}
+-- 
+2.24.3
+

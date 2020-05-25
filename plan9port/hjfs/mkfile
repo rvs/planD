@@ -1,0 +1,20 @@
+<$PLAN9/src/mkhdr
+
+TARG=hjfs
+OFILES=\
+	main.$O\
+	buf.$O\
+	dev.$O\
+	conv.$O\
+	fs1.$O\
+	fs2.$O\
+	auth.$O\
+	9p.$O\
+	dump.$O\
+	cons.$O\
+
+HFILES=\
+	dat.h\
+	fns.h\
+
+<$PLAN9/src/mkone
