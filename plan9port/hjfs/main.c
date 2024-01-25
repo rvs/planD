@@ -170,3 +170,9 @@ shutdown(void)
 	sync9(1);
 	threadexitsall(nil);
 }
+
+int
+threadmaybackground(void)
+{
+	return 1;
+}

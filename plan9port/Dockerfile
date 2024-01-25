@@ -1,11 +1,6 @@
-FROM alpine:3.11.6
+FROM alpine:latest
 
-RUN apk add git make gcc libc-dev linux-headers perl
-
-# workaround for https://github.com/9fans/plan9port/issues/36
-WORKDIR /libucontext
-RUN git clone --depth 1 https://github.com/kaniini/libucontext.git . &&\
-    make ARCH=x86_64 DESTDIR=/usr install && rm -rf /libucontext
+RUN apk add git make gcc libc-dev linux-headers perl patch
 
 WORKDIR /plan9port
 RUN git clone --depth 1 https://github.com/9fans/plan9port.git . ; rm -rf .git
