@@ -2,7 +2,7 @@ FROM alpine:latest as build
 
 WORKDIR /
 COPY *.patch /
-RUN apk add --no-cache git gcc musl-dev make groff
+RUN apk add --no-cache git gcc musl-dev make groff patch
 RUN git clone --depth 1 https://github.com/mjl-/authsrv9.git
 RUN cat /*.patch | patch -p0
 RUN make -C authsrv9
