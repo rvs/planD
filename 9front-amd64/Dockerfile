@@ -10,7 +10,10 @@ RUN cd 9660srv; mk
 
 # now lets download the torrent file
 FROM ubuntu:latest as torrent
+
+# Must be set in a form of --build-arg P9FRONT_URL=http://iso.only9fans.com/release/9front-10277.amd64.iso.gz.torrent
 ARG P9FRONT_URL
+
 COPY --from=tools /plan9port/src/cmd/o.9p /bin/9p
 COPY --from=tools /plan9port/src/cmd/o.9pserve /bin/9pserve
 COPY --from=tools /plan9port/src/cmd/9660srv/o.9660srv /bin/9660srv

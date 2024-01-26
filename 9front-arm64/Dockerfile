@@ -10,7 +10,10 @@ RUN cd hjfs; mk
 
 # now lets download the torrent file
 FROM ubuntu:latest as torrent
+
+# Must be set in a form of --build-arg P9FRONT_URL=http://iso.only9fans.com/release/9front-10277.pi3.img.gz.torrent
 ARG P9FRONT_URL
+
 COPY --from=tools /plan9port/src/cmd/o.9p /bin/9p
 COPY --from=tools /plan9port/src/cmd/o.9pserve /bin/9pserve
 COPY --from=tools /plan9port/src/cmd/hjfs/o.hjfs /bin/hjfs
@@ -18,7 +21,7 @@ COPY --from=base /etc/passwd /etc/group/ /etc/shadow /etc/
 
 # install packages
 RUN apt update
-RUN apt install -y transmission-daemon binutils
+RUN apt install -y transmission-daemon binutils fdisk
 
 # download 9front torrent
 RUN transmission-daemon ; sleep 5; transmission-remote localhost -a "$P9FRONT_URL" ;\
