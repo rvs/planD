@@ -1,5 +1,7 @@
 # Go code for interacting with Plan 9
 
+Packages for interacting with Plan 9 as well as ports of common Plan 9 libraries and tools.
+
 Here's what is implemented. All these are mostly useful when running on Plan9:
 
 * `acme` is a random collection of programs doing useful things in Acme windows
