@@ -1,5 +1,7 @@
 # planD: Plan9 from Containerspace
 
+[tl;dr;] make help
+
 Looking back at it from 2020 it clearly seems that the Original
 [Plan9](https://en.wikipedia.org/wiki/Plan_9_from_Bell_Labs) was very
 much ahead of its time. Some of its insigts are much better appreciated 30
@@ -16,7 +18,7 @@ of containarized applications communicating via REST or gRPC. Some even suggest 
 [these new patterns](https://static.googleusercontent.com/media/research.google.com/en//pubs/archive/45406.pdf)
 will be as influential in software design as object oriented patterns have been. While
 the jury is still very much out on that bombastic claim (and arguably the Gang of Four
-book has done more damanage than good to teh software industry) one fact is undeniable:
+book has done more damanage than good to the software industry) one fact is undeniable:
 OCI contatiners have very much become the building blocks of moderm distributed systems.
 
 Container technology like Docker, however, is great at helping you package your application
@@ -56,7 +58,7 @@ by leveraging one of the two runtime APIs:
 
 ### 1. VM API
 
-VM APIs are the closes to the original view that Plan9 had of hardware infrastructure. In fact,
+VM APIs are the closest to the original view that Plan9 had of hardware infrastructure. In fact,
 the job of a Plan9 kernel can be greatly simplified today since there's absolutely no need to
 support the vast collection of various I/O devices: a very basic set of disk, network and serial
 devices emulated by the VMM would suffice (it will be nice, however, to support virtio in Plan9:
@@ -67,7 +69,7 @@ is extremely congenial with the "cloud native" infrastructure views of today:
 kernel binary from its build. On some systems this kernel binary can be used directly, on other ones
 it needs to be wrapped into a trivial disk image.
 1. As a matter of fact, the self-contained nature of the Plan9 kernel image extends beyound just
-the binary bits that get loaded into kernel memory. Plan9 as an ability of also packaging filesystem
+the binary bits that get loaded into kernel memory. Plan9 has an ability of also packaging filesystem
 content of the initial root filesystem right into the kernel binary itself (thus obviating the need
 for things like initrd in Linux). The content of this filesystem is managed by the
 [root device](http://man.cat-v.org/plan_9/3/root) and what files get included in the binary kernel
